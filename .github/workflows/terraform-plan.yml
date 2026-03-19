@@ -1,0 +1,132 @@
+name: Terraform Plan on PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.7.5"
+  AWS_REGION: "eu-central-1"
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # Uncomment below if using Terraform Cloud
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      - name: Post Plan Output as PR Comment
+        uses: actions/github-script@v7
+        env:
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+          FMT_OUTCOME: ${{ steps.fmt.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('plan_output.txt', 'utf8');
+
+            // Trim output to stay within GitHub comment size limits (65536 chars)
+            const maxLength = 60000;
+            const trimmedPlan = planOutput.length > maxLength
+              ? '...(truncated - output too long)\n' + planOutput.slice(-maxLength)
+              : planOutput;
+
+            const fmtOutcome  = process.env.FMT_OUTCOME;
+            const validateOutcome = process.env.VALIDATE_OUTCOME;
+            const planOutcome = process.env.PLAN_OUTCOME;
+
+            const statusIcon = (outcome) => outcome === 'success' ? '✅' : '❌';
+
+            const body = `## 🏗️ Terraform Plan — \`${{ github.event.pull_request.head.sha }}\`
+
+            | Step | Result |
+            |------|--------|
+            | Format (fmt) | ${statusIcon(fmtOutcome)} \`${fmtOutcome}\` |
+            | Validate      | ${statusIcon(validateOutcome)} \`${validateOutcome}\` |
+            | Plan          | ${statusIcon(planOutcome)} \`${planOutcome}\` |
+
+            <details>
+            <summary>📋 Show Full Plan Output</summary>
+
+            \`\`\`hcl
+            ${trimmedPlan}
+            \`\`\`
+            </details>
+
+            > ⚠️ **Note:** This plan is based on the current state. Always review before applying.
+            > Triggered by @${{ github.actor }} on PR #${{ github.event.pull_request.number }}`;
+
+            // Find existing bot comment and update it (avoid duplicates)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('🏗️ Terraform Plan')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if Plan Failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
