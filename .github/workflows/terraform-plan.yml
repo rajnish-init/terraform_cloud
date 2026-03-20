@@ -191,40 +191,40 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # Job 4: terraform apply (parallel for each workspace, after approval)
   # ──────────────────────────────────────────────────────────────
-  terraform-apply:
-    name: Apply (${{ matrix.workspace }})
-    runs-on: ubuntu-latest
-    needs: wait-for-approval
-    strategy:
-      fail-fast: false
-      matrix:
-        workspace:
-          - terraform_cloud
-          - test-workspace-01
+  # terraform-apply:
+  #   name: Apply (${{ matrix.workspace }})
+  #   runs-on: ubuntu-latest
+  #   needs: wait-for-approval
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       workspace:
+  #         - terraform_cloud
+  #         - test-workspace-01
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+  #     - name: Setup Terraform
+  #       uses: hashicorp/setup-terraform@v3
+  #       with:
+  #         terraform_version: ${{ env.TF_VERSION }}
+  #         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
-      - name: Override workspace in terraform.tf
-        run: |
-          sed -i 's/name = ".*"/name = "${{ matrix.workspace }}"/' terraform.tf
+  #     - name: Override workspace in terraform.tf
+  #       run: |
+  #         sed -i 's/name = ".*"/name = "${{ matrix.workspace }}"/' terraform.tf
 
-      - name: Terraform Init
-        run: terraform init
+  #     - name: Terraform Init
+  #       run: terraform init
 
-      - name: Terraform Apply
-        run: terraform apply --var-file tfvars/${{ matrix.workspace }}.tfvars -auto-approve -no-color 2>&1 | tee apply_output.txt
+  #     - name: Terraform Apply
+  #       run: terraform apply --var-file tfvars/${{ matrix.workspace }}.tfvars -auto-approve -no-color 2>&1 | tee apply_output.txt
 
-      - name: Upload apply output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: apply-${{ matrix.workspace }}
-          path: apply_output.txt
+  #     - name: Upload apply output
+  #       if: always()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: apply-${{ matrix.workspace }}
+  #         path: apply_output.txt
