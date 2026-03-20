@@ -2,10 +2,10 @@ terraform {
   required_version = ">= 1.6.0"
 
   cloud {
-    organization = "TFC_cloud_demo"   
+    organization = "TFC_cloud_demo"
 
     workspaces {
-      name = "terraform_cloud"        
+      name = "terraform_cloud"
     }
   }
 

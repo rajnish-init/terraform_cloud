@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored — never commit secrets or real bucket names.
+# When using Terraform Cloud, set these as workspace variables instead.
+
+aws_region  = "eu-central-1"
+environment = "staging"
+project     = "Terraform Cloud"
+bucket_name = "your-unique-bucket-name"

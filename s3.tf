@@ -1,8 +1,7 @@
 resource "aws_s3_bucket" "example" {
-  bucket = "tfc-cloud-test-bucket-sutra"
+  bucket = var.bucket_name
 
-  tags = {
-    Name        = "My bucket"
-    Environment = "Dev"
-  }
+  tags = merge(local.common_tags, {
+    Name = "S3 Bucket - ${var.bucket_name}"
+  })
 }
