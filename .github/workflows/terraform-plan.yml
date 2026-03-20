@@ -1,4 +1,4 @@
-name: Terraform Plan → Approve → Apply
+name: Terraform Plan on PR
 
 on:
   pull_request:
