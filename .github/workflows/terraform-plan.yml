@@ -17,12 +17,18 @@ env:
   TF_VERSION: "1.7.5"
 
 jobs:
-  # ──────────────────────────────────────────────
-  # Job 1: Plan — runs on every PR targeting main
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────
+  # Job 1: Run terraform plan for each workspace in parallel
+  # ──────────────────────────────────────────────────────────────
   terraform-plan:
-    name: Terraform Plan
+    name: Plan (${{ matrix.workspace }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # let both workspaces finish even if one fails
+      matrix:
+        workspace:
+          - terraform_cloud
+          - test-workspace-01
 
     steps:
       - name: Checkout code
@@ -33,6 +39,12 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Override workspace in terraform.tf
+        run: |
+          sed -i 's/name = ".*"/name = "${{ matrix.workspace }}"/' terraform.tf
+          echo "=== terraform.tf after override ==="
+          cat terraform.tf
 
       - name: Terraform Format Check
         id: fmt
@@ -52,51 +64,95 @@ jobs:
         run: terraform plan -no-color 2>&1 | tee plan_output.txt
         continue-on-error: true
 
-      - name: Post Plan Output as PR Comment
-        if: github.event_name == 'pull_request'
+      - name: Save step outcomes
+        run: |
+          echo "fmt=${{ steps.fmt.outcome }}"        > outcomes.txt
+          echo "validate=${{ steps.validate.outcome }}" >> outcomes.txt
+          echo "plan=${{ steps.plan.outcome }}"      >> outcomes.txt
+
+      - name: Upload plan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-${{ matrix.workspace }}
+          path: |
+            plan_output.txt
+            outcomes.txt
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 2: Download both plan outputs and post a combined PR comment
+  # ──────────────────────────────────────────────────────────────
+  post-comment:
+    name: Post PR Comment
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: github.event_name == 'pull_request' && always()
+
+    steps:
+      - name: Download plan for terraform_cloud
+        uses: actions/download-artifact@v4
+        with:
+          name: plan-terraform_cloud
+          path: plans/terraform_cloud
+        continue-on-error: true
+
+      - name: Download plan for test-workspace-01
+        uses: actions/download-artifact@v4
+        with:
+          name: plan-test-workspace-01
+          path: plans/test-workspace-01
+        continue-on-error: true
+
+      - name: Post combined comment
         uses: actions/github-script@v7
-        env:
-          PLAN_OUTCOME: ${{ steps.plan.outcome }}
-          FMT_OUTCOME: ${{ steps.fmt.outcome }}
-          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const planOutput = fs.readFileSync('plan_output.txt', 'utf8');
+            const path = require('path');
 
-            // Trim output to stay within GitHub comment size limits (65536 chars)
-            const maxLength = 60000;
-            const trimmedPlan = planOutput.length > maxLength
-              ? '...(truncated - output too long)\n' + planOutput.slice(-maxLength)
-              : planOutput;
+            const workspaces = ['terraform_cloud', 'test-workspace-01'];
 
-            const fmtOutcome      = process.env.FMT_OUTCOME;
-            const validateOutcome = process.env.VALIDATE_OUTCOME;
-            const planOutcome     = process.env.PLAN_OUTCOME;
+            function readFile(filePath) {
+              try { return fs.readFileSync(filePath, 'utf8'); }
+              catch { return null; }
+            }
 
-            const statusIcon = (outcome) => outcome === 'success' ? '✅' : '❌';
+            function parseOutcomes(content) {
+              const result = { fmt: 'unknown', validate: 'unknown', plan: 'unknown' };
+              if (!content) return result;
+              for (const line of content.trim().split('\n')) {
+                const [key, val] = line.split('=');
+                if (key && val) result[key.trim()] = val.trim();
+              }
+              return result;
+            }
 
-            const body = `## 🏗️ Terraform Plan — \`${{ github.event.pull_request.head.sha }}\`
+            const maxLength = 25000; // per workspace, to stay under GH limit
+            const statusIcon = (o) => o === 'success' ? '✅' : o === 'failure' ? '❌' : '⚠️';
 
-            | Step | Result |
-            |------|--------|
-            | Format (fmt) | ${statusIcon(fmtOutcome)} \`${fmtOutcome}\` |
-            | Validate      | ${statusIcon(validateOutcome)} \`${validateOutcome}\` |
-            | Plan          | ${statusIcon(planOutcome)} \`${planOutcome}\` |
+            let body = `## 🏗️ Terraform Plan Results\n`;
+            body += `> Commit: \`${{ github.event.pull_request.head.sha }}\` | Triggered by @${{ github.actor }}\n\n`;
 
-            <details>
-            <summary>📋 Show Full Plan Output</summary>
+            for (const ws of workspaces) {
+              const planRaw  = readFile(`plans/${ws}/plan_output.txt`);
+              const outcomes = parseOutcomes(readFile(`plans/${ws}/outcomes.txt`));
+              const plan     = planRaw
+                ? (planRaw.length > maxLength ? '...(truncated)\n' + planRaw.slice(-maxLength) : planRaw)
+                : '_Plan output not available_';
 
-            \`\`\`hcl
-            ${trimmedPlan}
-            \`\`\`
-            </details>
+              body += `---\n`;
+              body += `### 🗂️ Workspace: \`${ws}\`\n\n`;
+              body += `| Step | Result |\n|------|--------|\n`;
+              body += `| Format (fmt) | ${statusIcon(outcomes.fmt)} \`${outcomes.fmt}\` |\n`;
+              body += `| Validate     | ${statusIcon(outcomes.validate)} \`${outcomes.validate}\` |\n`;
+              body += `| Plan         | ${statusIcon(outcomes.plan)} \`${outcomes.plan}\` |\n\n`;
+              body += `<details>\n<summary>📋 Show Plan Output — ${ws}</summary>\n\n`;
+              body += `\`\`\`\n${plan}\n\`\`\`\n</details>\n\n`;
+            }
 
-            > ⚠️ **Note:** This plan is based on the current state. Always review before applying.
-            > Triggered by @${{ github.actor }} on PR #${{ github.event.pull_request.number }}`;
+            body += `---\n> ⚠️ Review all plans carefully before merging.`;
 
-            // Find existing bot comment and update it (avoid duplicates)
+            // Update existing bot comment or create new one
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -104,7 +160,7 @@ jobs:
             });
 
             const botComment = comments.find(c =>
-              c.user.type === 'Bot' && c.body.includes('🏗️ Terraform Plan')
+              c.user.type === 'Bot' && c.body.includes('🏗️ Terraform Plan Results')
             );
 
             if (botComment) {
@@ -123,31 +179,6 @@ jobs:
               });
             }
 
-      - name: Fail if Plan Failed
-        if: steps.plan.outcome == 'failure'
+      - name: Fail if any plan failed
+        if: needs.terraform-plan.result == 'failure'
         run: exit 1
-
-  # ──────────────────────────────────────────────────────────────
-  # Job 2: Apply — runs only on push to main (after merge)
-  # ──────────────────────────────────────────────────────────────
-  terraform-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: []          # independent of plan job; plan only runs on PRs
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve -no-color
