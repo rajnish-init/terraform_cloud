@@ -2,4 +2,4 @@
 aws_region   = "eu-central-1"
 environment  = "staging"
 project      = "Terraform Cloud"
-bucket_name  = "tfc-cloud-test-bucket-sutra"
+bucket_name  = "tfc-cloud-test-bucket-sutra-01"
