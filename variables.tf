@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "environment" {
   description = "Deployment environment (e.g. staging, production)"
   type        = string
-  default     = "staging"
+  default     = "test-01"
 }
 
 variable "project" {
@@ -19,4 +19,5 @@ variable "project" {
 variable "bucket_name" {
   description = "Globally unique name for the S3 bucket"
   type        = string
+  default     = "tfc-test-bucket"
 }
