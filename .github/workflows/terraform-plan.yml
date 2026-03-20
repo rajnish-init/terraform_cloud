@@ -18,7 +18,7 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Job 1: terraform plan (parallel for each workspace)
+  # Job 1: speculative terraform plan (parallel per workspace)
   # ──────────────────────────────────────────────────────────────
   terraform-plan:
     name: Plan (${{ matrix.workspace }})
@@ -57,7 +57,7 @@ jobs:
         id: validate
         run: terraform validate -no-color
 
-      - name: Terraform Plan
+      - name: Terraform Plan (speculative)
         id: plan
         run: terraform plan --var-file tfvars/${{ matrix.workspace }}.tfvars -no-color 2>&1 | tee plan_output.txt
         continue-on-error: true
@@ -128,7 +128,8 @@ jobs:
 
             let body = `## 🏗️ Terraform Plan Results\n`;
             body += `> Commit: \`${{ github.event.pull_request.head.sha }}\` | By @${{ github.actor }}\n\n`;
-            body += `> ⏳ **Waiting for approval before apply.** A reviewer must approve the \`terraform-approve\` environment to proceed.\n\n`;
+            body += `> ⏳ **Review the plan below, then approve the \`terraform-approve\` environment to unlock merging.**\n`;
+            body += `> 🔀 **Merging will trigger TFC to run the final plan + apply automatically.**\n\n`;
 
             for (const ws of workspaces) {
               const planRaw  = readFile(`plans/${ws}/plan_output.txt`);
@@ -145,7 +146,7 @@ jobs:
               body += `<details>\n<summary>📋 Show Plan Output — ${ws}</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>\n\n`;
             }
 
-            body += `---\n> ⚠️ Review all plans before approving.`;
+            body += `---\n> ⚠️ Review all plans carefully. Once approved and merged, TFC will apply automatically.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -174,57 +175,20 @@ jobs:
             }
 
   # ──────────────────────────────────────────────────────────────
-  # Job 3: Manual approval gate (uses GitHub Environment)
-  # Reviewers configured on the "terraform-approve" Environment
-  # will get a notification and must click Approve to proceed.
+  # Job 3: Manual approval gate
+  # - Reviewer sees plan in PR comment, then approves here
+  # - This satisfies the branch protection required status check
+  # - Once approved, the PR can be merged
+  # - TFC VCS integration then handles the real plan + apply on main
   # ──────────────────────────────────────────────────────────────
   wait-for-approval:
     name: ⏸️ Waiting for Approval
     runs-on: ubuntu-latest
     needs: post-comment
     if: always() && needs.terraform-plan.result != 'failure'
-    environment: terraform-approve # ← set required reviewers on this in GitHub Settings
+    environment: terraform-approve # ← configure required reviewers here in GitHub Settings
     steps:
-      - name: Approved
-        run: echo "✅ Approved by a reviewer. Proceeding with terraform apply..."
-
-  # ──────────────────────────────────────────────────────────────
-  # Job 4: terraform apply (parallel for each workspace, after approval)
-  # ──────────────────────────────────────────────────────────────
-  # terraform-apply:
-  #   name: Apply (${{ matrix.workspace }})
-  #   runs-on: ubuntu-latest
-  #   needs: wait-for-approval
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       workspace:
-  #         - terraform_cloud
-  #         - test-workspace-01
-
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-
-  #     - name: Setup Terraform
-  #       uses: hashicorp/setup-terraform@v3
-  #       with:
-  #         terraform_version: ${{ env.TF_VERSION }}
-  #         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
-
-  #     - name: Override workspace in terraform.tf
-  #       run: |
-  #         sed -i 's/name = ".*"/name = "${{ matrix.workspace }}"/' terraform.tf
-
-  #     - name: Terraform Init
-  #       run: terraform init
-
-  #     - name: Terraform Apply
-  #       run: terraform apply --var-file tfvars/${{ matrix.workspace }}.tfvars -auto-approve -no-color 2>&1 | tee apply_output.txt
-
-  #     - name: Upload apply output
-  #       if: always()
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: apply-${{ matrix.workspace }}
-  #         path: apply_output.txt
+      - name: Approved — PR is now eligible to merge
+        run: |
+          echo "✅ Plan approved. This PR can now be merged."
+          echo "🚀 On merge, TFC will run the final plan + apply automatically via VCS trigger."
